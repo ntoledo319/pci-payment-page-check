@@ -113,6 +113,14 @@ processor has explicitly authorized that use.
 
 A table of findings is written to the job summary on every run.
 
+The summary also links one scope-matched free guide. For a `direct` page, it
+renders sample or checkout links only when the hosted result returned those
+exact readiness-gated first-party paths. The Action validates their origin and
+path, never manufactures an unavailable offer, and never shows a checkout for
+`embedded`, `outsourced`, or unspecified scope. Saved-HTML checks can expose the
+one-time pack but never the recurring monitor, because a pasted document is not
+a schedulable public target.
+
 ## What it does and does not do
 
 It reads served HTML (or the saved HTML you explicitly select) and inventories

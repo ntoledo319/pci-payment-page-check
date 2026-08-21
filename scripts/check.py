@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 TIMEOUT_SECONDS = 60
 MAX_HTML_BYTES = 2_000_000
@@ -35,6 +35,30 @@ DEFAULT_PAGE_ORIGIN = "https://example.invalid/checkout"
 SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3}
 FAIL_THRESHOLDS = {"low", "medium", "high"}
 PAYMENT_PAGE_SCOPES = {"unspecified", "direct", "embedded", "outsourced"}
+PRODUCT_PATHS = {
+    "/checkout/pci",
+    "/checkout/pci_ledger",
+    "/samples/pci-dss-6-4-3-remediation-pack",
+    "/samples/pci-dss-11-6-1-evidence-ledger",
+}
+SCOPE_GUIDES = {
+    "direct": (
+        "Build the required script inventory",
+        "https://qi.toledotechnologies.com/pci/pci-dss-6-4-3-script-inventory-template",
+    ),
+    "embedded": (
+        "Confirm the SAQ A embedded-form boundary",
+        "https://qi.toledotechnologies.com/pci/saq-a-script-security-confirmation",
+    ),
+    "outsourced": (
+        "Confirm the SAQ A redirect and outsourced boundary",
+        "https://qi.toledotechnologies.com/pci/saq-a-script-security-confirmation",
+    ),
+    "unspecified": (
+        "Review the bounded PCI payment-page workflow",
+        "https://qi.toledotechnologies.com/pci",
+    ),
+}
 
 
 def _in(name: str, default: str = "") -> str:
@@ -135,6 +159,59 @@ def _read_workspace_html(raw_path: str) -> str:
     return decoded
 
 
+def _api_base() -> str:
+    base = _in("API_BASE", "https://qi.toledotechnologies.com").rstrip("/")
+    try:
+        parsed = urlsplit(base)
+        loopback_http = parsed.scheme == "http" and parsed.hostname in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }
+        valid_base = (
+            (parsed.scheme == "https" or loopback_http)
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+            and parsed.path in {"", "/"}
+        )
+    except (UnicodeError, ValueError):
+        valid_base = False
+    if not valid_base:
+        _fail("api-base must be an https origin (loopback http is allowed for tests).")
+    return base
+
+
+def _safe_product_url(value: object, *, base: str) -> str:
+    """Accept only Tessera's exact readiness-gated first-party result paths."""
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str) or len(value) > 2_048:
+        _fail("The check service returned an invalid next-step URL.")
+    try:
+        parsed = urlsplit(value)
+        origin = urlsplit(base)
+        port = parsed.port
+    except (UnicodeError, ValueError):
+        _fail("The check service returned an invalid next-step URL.")
+    if parsed.query or parsed.fragment or parsed.path not in PRODUCT_PATHS:
+        _fail("The check service returned an unrecognized next-step path.")
+    if not parsed.scheme and not parsed.netloc:
+        return f"{base}{parsed.path}"
+    same_origin = (
+        parsed.scheme == origin.scheme
+        and parsed.hostname == origin.hostname
+        and port == origin.port
+        and parsed.username is None
+        and parsed.password is None
+    )
+    if not same_origin:
+        _fail("The check service returned a next-step URL on another origin.")
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
 def build_request_body() -> dict:
     url = _in("URL")
     html_file = _in("HTML_FILE")
@@ -168,27 +245,7 @@ def build_request_body() -> dict:
 
 
 def call_service(body: dict) -> dict:
-    base = _in("API_BASE", "https://qi.toledotechnologies.com").rstrip("/")
-    try:
-        parsed = urlsplit(base)
-        loopback_http = parsed.scheme == "http" and parsed.hostname in {
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        }
-        valid_base = (
-            (parsed.scheme == "https" or loopback_http)
-            and bool(parsed.hostname)
-            and parsed.username is None
-            and parsed.password is None
-            and not parsed.query
-            and not parsed.fragment
-            and parsed.path in {"", "/"}
-        )
-    except (UnicodeError, ValueError):
-        valid_base = False
-    if not valid_base:
-        _fail("api-base must be an https origin (loopback http is allowed for tests).")
+    base = _api_base()
     request = urllib.request.Request(
         f"{base}/api/v1/scan/pci",
         data=json.dumps(body).encode("utf-8"),
@@ -245,7 +302,8 @@ def _reject_json_constant(value: str) -> None:
 
 
 def main() -> int:
-    result = call_service(build_request_body())
+    body = build_request_body()
+    result = call_service(body)
     if result.get("error"):
         _fail(str(result["error"]))
 
@@ -307,6 +365,31 @@ def main() -> int:
         lines.append("No finding was returned for the bounded checks performed.")
     if result.get("scope_note"):
         lines.extend(["", f"**Scope:** {_cell(result['scope_note'])}"])
+    scope = str(body.get("payment_page_scope") or "unspecified")
+    guide_label, guide_url = SCOPE_GUIDES[scope]
+    lines.extend(["", "### Put this result to work", "", f"- [{guide_label}]({guide_url})"])
+    if scope == "direct":
+        base = _api_base()
+        sample_url = _safe_product_url(result.get("sample_url"), base=base)
+        buy_url = _safe_product_url(result.get("buy_url"), base=base)
+        if sample_url:
+            lines.append(f"- [Preview the 6.4.3 deliverable]({sample_url})")
+        if buy_url:
+            lines.append(
+                f"- [Continue only if the readiness-checked product fits]({buy_url})"
+            )
+        monitoring = result.get("ongoing_monitoring")
+        if monitoring is not None and not isinstance(monitoring, dict):
+            _fail("The check service returned an invalid monitoring offer.")
+        if isinstance(monitoring, dict) and "html" not in body:
+            ledger_sample = _safe_product_url(monitoring.get("sample_url"), base=base)
+            ledger_buy = _safe_product_url(monitoring.get("buy_url"), base=base)
+            if ledger_sample:
+                lines.append(f"- [Preview the 11.6.1 evidence ledger]({ledger_sample})")
+            if ledger_buy:
+                lines.append(
+                    f"- [Start readiness-checked 72-hour monitoring]({ledger_buy})"
+                )
     lines += [
         "",
         "<sub>Software-generated evidence for qualified human review. It does not "

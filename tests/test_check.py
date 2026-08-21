@@ -229,6 +229,124 @@ class CheckTests(unittest.TestCase):
         self.assertIn("&lt;img", rendered)
         self.assertIn("&#124;row", rendered)
 
+    def test_direct_result_exposes_only_validated_server_next_steps(self) -> None:
+        summary = self.workspace / "summary.md"
+        os.environ.update(
+            {
+                "INPUT_URL": "https://shop.example/checkout",
+                "INPUT_PAYMENT_PAGE_SCOPE": "direct",
+                "INPUT_FAIL_ON": "never",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+        )
+        result = {
+            "headline": "One bounded observation.",
+            "observed_findings": [],
+            "total_findings": 0,
+            "sample_url": "/samples/pci-dss-6-4-3-remediation-pack",
+            "buy_url": "/checkout/pci",
+            "ongoing_monitoring": {
+                "sample_url": "/samples/pci-dss-11-6-1-evidence-ledger",
+                "buy_url": "/checkout/pci_ledger",
+            },
+        }
+
+        with mock.patch.object(CHECK, "call_service", return_value=result):
+            self.assertEqual(CHECK.main(), 0)
+
+        rendered = summary.read_text(encoding="utf-8")
+        self.assertIn("pci-dss-6-4-3-script-inventory-template", rendered)
+        self.assertIn("https://qi.toledotechnologies.com/checkout/pci)", rendered)
+        self.assertIn("https://qi.toledotechnologies.com/checkout/pci_ledger)", rendered)
+        self.assertIn("Preview the 6.4.3 deliverable", rendered)
+        self.assertIn("Preview the 11.6.1 evidence ledger", rendered)
+
+    def test_non_direct_scope_never_advertises_a_returned_checkout(self) -> None:
+        summary = self.workspace / "summary.md"
+        os.environ.update(
+            {
+                "INPUT_URL": "https://shop.example/cart",
+                "INPUT_PAYMENT_PAGE_SCOPE": "outsourced",
+                "INPUT_FAIL_ON": "never",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+        )
+        inconsistent = {
+            "headline": "Bounded inventory complete.",
+            "observed_findings": [],
+            "total_findings": 0,
+            "sample_url": "/samples/pci-dss-6-4-3-remediation-pack",
+            "buy_url": "/checkout/pci",
+            "ongoing_monitoring": {"buy_url": "/checkout/pci_ledger"},
+        }
+
+        with mock.patch.object(CHECK, "call_service", return_value=inconsistent):
+            self.assertEqual(CHECK.main(), 0)
+
+        rendered = summary.read_text(encoding="utf-8")
+        self.assertIn("saq-a-script-security-confirmation", rendered)
+        self.assertNotIn("/checkout/", rendered)
+        self.assertNotIn("Preview the 6.4.3 deliverable", rendered)
+
+    def test_saved_html_never_advertises_a_returned_monitor(self) -> None:
+        summary = self.workspace / "summary.md"
+        self.write("checkout.html", b"<script></script>")
+        os.environ.update(
+            {
+                "INPUT_HTML_FILE": "checkout.html",
+                "INPUT_PAGE_ORIGIN": "https://shop.example/checkout",
+                "INPUT_PAYMENT_PAGE_SCOPE": "direct",
+                "INPUT_FAIL_ON": "never",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+        )
+        result = {
+            "headline": "Bounded inventory complete.",
+            "observed_findings": [],
+            "total_findings": 0,
+            "buy_url": "/checkout/pci",
+            "ongoing_monitoring": {"buy_url": "/checkout/pci_ledger"},
+        }
+
+        with mock.patch.object(CHECK, "call_service", return_value=result):
+            self.assertEqual(CHECK.main(), 0)
+
+        rendered = summary.read_text(encoding="utf-8")
+        self.assertIn("/checkout/pci)", rendered)
+        self.assertNotIn("/checkout/pci_ledger", rendered)
+
+    def test_untrusted_next_step_origins_and_paths_fail_closed(self) -> None:
+        for value in (
+            "https://evil.example/checkout/pci",
+            "//evil.example/checkout/pci",
+            "/checkout/pci?coupon=unknown",
+            "/checkout/not-a-product",
+            7,
+        ):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                CHECK._safe_product_url(value, base="https://qi.toledotechnologies.com")
+
+    def test_a_result_without_server_offer_fields_never_synthesizes_checkout(self) -> None:
+        summary = self.workspace / "summary.md"
+        os.environ.update(
+            {
+                "INPUT_URL": "https://shop.example/checkout",
+                "INPUT_PAYMENT_PAGE_SCOPE": "direct",
+                "INPUT_FAIL_ON": "never",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+        )
+        result = {
+            "headline": "Bounded inventory complete.",
+            "observed_findings": [],
+            "total_findings": 0,
+        }
+
+        with mock.patch.object(CHECK, "call_service", return_value=result):
+            self.assertEqual(CHECK.main(), 0)
+
+        self.assertNotIn("/checkout/", summary.read_text(encoding="utf-8"))
+
     def test_multiline_output_uses_a_non_static_delimiter(self) -> None:
         output = self.workspace / "output.txt"
         os.environ["GITHUB_OUTPUT"] = str(output)
