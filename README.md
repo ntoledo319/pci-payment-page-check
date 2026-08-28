@@ -26,7 +26,6 @@ during an assessment.
     url: https://yourstore.com/checkout
     allowed-domains: js.stripe.com, www.googletagmanager.com
     fail-on: high
-    payment-page-scope: direct
 ```
 
 Checking a page that is not deployed yet, or sits behind a login:
@@ -37,14 +36,20 @@ Checking a page that is not deployed yet, or sits behind a login:
     html-file: dist/checkout.html
     page-origin: https://yourstore.com/checkout
     allowed-domains: js.stripe.com
-    payment-page-scope: direct
 ```
 
 `html-file` is uploaded to the hosted check. Use a generated public-page
 artifact, not an authenticated DOM dump. Never include credentials, card data,
 customer data, payment details, or private source.
 
-### Choose the recipe that matches the payment flow
+The first run intentionally leaves `payment-page-scope` unspecified. It returns
+the bounded served-HTML inventory and cannot show paid next steps. Review that
+inventory, then confirm the payment flow with your acquirer or qualified
+reviewer before choosing one of the explicit recipes below for a later run.
+Changing scope performs another check; the Action does not guess the scope or
+automatically launch a second run.
+
+### After the first inventory, choose the confirmed payment flow
 
 The scope input is not a compliance answer. It prevents the check from turning
 an observed script into the wrong product recommendation. Confirm the applicable

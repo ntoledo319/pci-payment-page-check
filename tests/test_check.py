@@ -288,6 +288,59 @@ class CheckTests(unittest.TestCase):
         self.assertNotIn("/checkout/", rendered)
         self.assertNotIn("Preview the 6.4.3 deliverable", rendered)
 
+    def test_unspecified_scope_is_omitted_and_never_advertises_checkout(self) -> None:
+        summary = self.workspace / "summary.md"
+        os.environ.update(
+            {
+                "INPUT_URL": "https://shop.example/checkout",
+                "INPUT_ALLOWED_DOMAINS": "shop.example, js.stripe.com",
+                "INPUT_FAIL_ON": "never",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+        )
+
+        body = CHECK.build_request_body()
+
+        self.assertNotIn("payment_page_scope", body)
+        self.assertEqual(body["allowed_domains"], ["shop.example", "js.stripe.com"])
+
+        inconsistent = {
+            "headline": "Bounded inventory complete.",
+            "observed_findings": [],
+            "total_findings": 0,
+            "sample_url": "/samples/pci-dss-6-4-3-remediation-pack",
+            "buy_url": "/checkout/pci",
+            "ongoing_monitoring": {
+                "sample_url": "/samples/pci-dss-11-6-1-evidence-ledger",
+                "buy_url": "/checkout/pci_ledger",
+            },
+        }
+
+        with mock.patch.object(CHECK, "call_service", return_value=inconsistent):
+            self.assertEqual(CHECK.main(), 0)
+
+        rendered = summary.read_text(encoding="utf-8")
+        self.assertIn("bounded PCI payment-page workflow", rendered)
+        self.assertNotIn("/checkout/", rendered)
+        self.assertNotIn("Preview the 6.4.3 deliverable", rendered)
+        self.assertNotIn("Preview the 11.6.1 evidence ledger", rendered)
+
+    def test_initial_readme_recipes_are_scope_neutral_before_classification(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        initial_usage = readme.split(
+            "### After the first inventory, choose the confirmed payment flow", 1
+        )[0]
+
+        self.assertNotIn("payment-page-scope:", initial_usage)
+        self.assertIn(
+            "The first run intentionally leaves `payment-page-scope` unspecified.",
+            initial_usage,
+        )
+        self.assertIn("cannot show paid next steps", initial_usage)
+        self.assertIn("payment-page-scope: direct", readme)
+        self.assertIn("payment-page-scope: embedded", readme)
+        self.assertIn("payment-page-scope: outsourced", readme)
+
     def test_saved_html_never_advertises_a_returned_monitor(self) -> None:
         summary = self.workspace / "summary.md"
         self.write("checkout.html", b"<script></script>")
